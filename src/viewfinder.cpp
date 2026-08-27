@@ -1,6 +1,7 @@
 #include "viewfinder.hpp"
 
 #include <X11/Xatom.h>
+#include <X11/extensions/shape.h>
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
 
@@ -42,6 +43,7 @@ Viewfinder::Viewfinder(XSession& x, Rect initial) : x_(x) {
     XSetClassHint(x_.dpy(), win_, &cls);
     XStoreName(x_.dpy(), win_, "screenshot");
 
+    applyShape();
     XMapRaised(x_.dpy(), win_);
 
     // Override-redirect windows get no focus from the WM, so take the
@@ -65,6 +67,37 @@ void Viewfinder::teardown() {
     XSync(x_.dpy(), False);
 }
 
+// Restrict the window to its border strips and toolbar, leaving the middle
+// as a genuine hole rather than a transparent pixel. The desktop underneath
+// shows through untouched, so what you see framed is exactly what gets
+// captured - and unlike an ARGB visual this needs no compositor running.
+void Viewfinder::applyShape() {
+    if (!x_.hasShape()) return;  // no extension: window stays a solid box
+
+    const Rect& f = layout_.frameLocal;
+    const Rect& t = layout_.toolbarLocal;
+
+    const XRectangle parts[5] = {
+        // top / bottom / left / right strips of the frame
+        { static_cast<short>(f.x),            static_cast<short>(f.y),
+          static_cast<unsigned short>(f.w),   static_cast<unsigned short>(BORDER) },
+        { static_cast<short>(f.x),            static_cast<short>(f.bottom() - BORDER),
+          static_cast<unsigned short>(f.w),   static_cast<unsigned short>(BORDER) },
+        { static_cast<short>(f.x),            static_cast<short>(f.y + BORDER),
+          static_cast<unsigned short>(BORDER),
+          static_cast<unsigned short>(f.h - 2 * BORDER) },
+        { static_cast<short>(f.right() - BORDER), static_cast<short>(f.y + BORDER),
+          static_cast<unsigned short>(BORDER),
+          static_cast<unsigned short>(f.h - 2 * BORDER) },
+        // the toolbar strip
+        { static_cast<short>(t.x),            static_cast<short>(t.y),
+          static_cast<unsigned short>(t.w),   static_cast<unsigned short>(t.h) },
+    };
+
+    XShapeCombineRectangles(x_.dpy(), win_, ShapeBounding, 0, 0,
+                            const_cast<XRectangle*>(parts), 5, ShapeSet, Unsorted);
+}
+
 void Viewfinder::setGeometry(const Rect& sel) {
     sel_    = sel;
     layout_ = layoutFor(sel_, x_.screenW(), x_.screenH());
@@ -72,6 +105,7 @@ void Viewfinder::setGeometry(const Rect& sel) {
                       layout_.win.x, layout_.win.y,
                       static_cast<unsigned>(layout_.win.w),
                       static_cast<unsigned>(layout_.win.h));
+    applyShape();  // the shape is in window coords, so it must follow every resize
 }
 
 std::optional<Rect> Viewfinder::run() {

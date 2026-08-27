@@ -30,6 +30,7 @@ public:
 
 private:
     void setGeometry(const Rect& sel);
+    void applyShape();
     void teardown();
 
     XSession& x_;
