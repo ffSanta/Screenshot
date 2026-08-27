@@ -4,6 +4,7 @@
 #include <X11/extensions/shape.h>
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
+#include <X11/Xcursor/Xcursor.h>
 #include <cairo-xlib.h>
 #include "theme.hpp"
 
@@ -30,7 +31,8 @@ Viewfinder::Viewfinder(XSession& x, Rect initial) : x_(x) {
     a.override_redirect = True;    // the line that keeps i3 from tiling us
     a.background_pixmap = None;    // we paint every pixel ourselves, no flash
     a.event_mask = ExposureMask | ButtonPressMask | ButtonReleaseMask
-                 | PointerMotionMask | KeyPressMask | StructureNotifyMask;
+                 | PointerMotionMask | KeyPressMask | StructureNotifyMask
+                 | EnterWindowMask | LeaveWindowMask;
 
     win_ = XCreateWindow(x_.dpy(), x_.root(),
                          layout_.win.x, layout_.win.y,
@@ -67,6 +69,9 @@ Viewfinder::~Viewfinder() {
         cairo_surface_destroy(surf_);
         surf_ = nullptr;
     }
+    for (auto& [zone, cur] : cursors_)
+        if (cur) XFreeCursor(x_.dpy(), cur);
+    cursors_.clear();
     if (win_) {
         XDestroyWindow(x_.dpy(), win_);
         win_ = 0;
@@ -273,40 +278,142 @@ void Viewfinder::setGeometry(const Rect& sel) {
     draw();
 }
 
-std::optional<Rect> Viewfinder::run() {
-    std::optional<Rect> result;
 
-    for (bool running = true; running; ) {
+Cursor Viewfinder::cursorFor(Zone z) {
+    const int key = static_cast<int>(z);
+    if (auto it = cursors_.find(key); it != cursors_.end()) return it->second;
+    // Xcursor honours the user's cursor theme; a null result just means the
+    // theme lacks that shape, in which case we inherit the default pointer.
+    Cursor c = XcursorLibraryLoadCursor(x_.dpy(), cursorName(z));
+    cursors_.emplace(key, c);
+    return c;
+}
+
+void Viewfinder::setHover(Zone z) {
+    if (z == hover_) return;
+    hover_ = z;
+    if (cursorZone_ != z) {
+        cursorZone_ = z;
+        XDefineCursor(x_.dpy(), win_, cursorFor(z));
+    }
+    draw();
+}
+
+void Viewfinder::onButtonPress(const XButtonEvent& e) {
+    if (e.button != Button1) return;
+
+    const Zone z = hitTest(layout_, e.x, e.y);
+    if (z == Zone::SaveBtn || z == Zone::CancelBtn) {
+        pressed_ = z;
+        draw();
+        return;
+    }
+    if (z != Zone::Move && !isResize(z)) return;
+
+    dragZone_    = z;
+    anchor_      = sel_;
+    anchorRootX_ = e.x_root;
+    anchorRootY_ = e.y_root;
+
+    // Grab so the drag keeps tracking once the pointer leaves the thin border
+    // - without this a fast drag would simply stop following the mouse.
+    XGrabPointer(x_.dpy(), win_, True,
+                 ButtonReleaseMask | PointerMotionMask,
+                 GrabModeAsync, GrabModeAsync, None, cursorFor(z), CurrentTime);
+}
+
+void Viewfinder::onMotion(const XMotionEvent& e) {
+    if (dragZone_ != Zone::Outside) {
+        const Rect next = applyDrag(dragZone_, anchor_,
+                                    e.x_root - anchorRootX_,
+                                    e.y_root - anchorRootY_,
+                                    x_.screenW(), x_.screenH());
+        if (next.x != sel_.x || next.y != sel_.y ||
+            next.w != sel_.w || next.h != sel_.h) {
+            setGeometry(next);
+        }
+        return;
+    }
+    setHover(hitTest(layout_, e.x, e.y));
+}
+
+void Viewfinder::onButtonRelease(const XButtonEvent& e) {
+    if (e.button != Button1) return;
+
+    if (dragZone_ != Zone::Outside) {
+        dragZone_ = Zone::Outside;
+        XUngrabPointer(x_.dpy(), CurrentTime);
+        setHover(hitTest(layout_, e.x, e.y));
+        return;
+    }
+
+    if (pressed_ != Zone::Outside) {
+        // Only fire if the release lands on the same button, so dragging off
+        // a button cancels the click the way every other toolbar behaves.
+        const Zone z = hitTest(layout_, e.x, e.y);
+        const Zone was = pressed_;
+        pressed_ = Zone::Outside;
+        if (z == was) {
+            if (was == Zone::SaveBtn) result_ = sel_;
+            running_ = false;
+        } else {
+            draw();
+        }
+    }
+}
+
+std::optional<Rect> Viewfinder::run() {
+    XDefineCursor(x_.dpy(), win_, cursorFor(Zone::Outside));
+
+    while (running_) {
         XEvent e;
         XNextEvent(x_.dpy(), &e);
 
         switch (e.type) {
-        case KeyPress: {
-            const KeySym ks = XLookupKeysym(&e.xkey, 0);
-            if (ks == XK_Escape) {
-                running = false;
-            } else if (ks == XK_Return || ks == XK_KP_Enter) {
-                result = sel_;
-                running = false;
-            }
-            break;
-        }
         case Expose:
             if (e.xexpose.count == 0) draw();
             break;
+
+        case MotionNotify: {
+            // Collapse the queued motion events and act on the newest only,
+            // otherwise a fast drag falls behind the pointer redrawing stale
+            // positions.
+            XEvent m = e;
+            while (XCheckTypedWindowEvent(x_.dpy(), win_, MotionNotify, &m)) {}
+            onMotion(m.xmotion);
+            break;
+        }
+
         case ButtonPress:
-            if (e.xbutton.button == Button1) {
-                result = sel_;
-                running = false;
+            onButtonPress(e.xbutton);
+            break;
+
+        case ButtonRelease:
+            onButtonRelease(e.xbutton);
+            break;
+
+        case LeaveNotify:
+            if (dragZone_ == Zone::Outside) setHover(Zone::Outside);
+            break;
+
+        case KeyPress: {
+            const KeySym ks = XLookupKeysym(&e.xkey, 0);
+            if (ks == XK_Escape) {
+                running_ = false;
+            } else if (ks == XK_Return || ks == XK_KP_Enter) {
+                result_ = sel_;
+                running_ = false;
             }
             break;
+        }
+
         default:
             break;
         }
     }
 
     teardown();
-    return result;
+    return result_;
 }
 
 } // namespace ss

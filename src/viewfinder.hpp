@@ -6,6 +6,7 @@
 #include <X11/Xlib.h>
 #include <cairo.h>
 #include <optional>
+#include <unordered_map>
 
 namespace ss {
 
@@ -40,13 +41,33 @@ private:
                     bool hovered, bool pressed);
     void teardown();
 
+    void onButtonPress(const XButtonEvent& e);
+    void onMotion(const XMotionEvent& e);
+    void onButtonRelease(const XButtonEvent& e);
+    void setHover(Zone z);
+    Cursor cursorFor(Zone z);
+
     XSession& x_;
     Window    win_ = 0;
     cairo_surface_t* surf_ = nullptr;
     Rect      sel_{};
     Layout    layout_{};
     Zone      hover_   = Zone::Outside;   // zone under the pointer, for highlights
-    Zone      pressed_ = Zone::Outside;   // button being held down
+    Zone      pressed_ = Zone::Outside;   // toolbar button being held down
+
+    // Drag in progress. The anchor is the selection as it was when the drag
+    // started, so every motion is applied to that rather than accumulated -
+    // which keeps the frame from creeping if an event is ever dropped.
+    Zone      dragZone_ = Zone::Outside;
+    Rect      anchor_{};
+    int       anchorRootX_ = 0;
+    int       anchorRootY_ = 0;
+
+    std::unordered_map<int, Cursor> cursors_;
+    Zone      cursorZone_ = Zone::CancelBtn;  // deliberately != initial hover
+
+    std::optional<Rect> result_;
+    bool      running_ = true;
 };
 
 // Sensible starting frame: 800x500, shrunk to fit and centred on screen.
