@@ -21,6 +21,8 @@ pkg_check_modules(DEPS REQUIRED IMPORTED_TARGET
 add_executable(screenshot
   src/main.cpp
   src/options.cpp
+  src/xsession.cpp
+  src/viewfinder.cpp
 )
 
 target_compile_options(screenshot PRIVATE -Wall -Wextra)
