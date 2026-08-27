@@ -4,8 +4,11 @@
 #include <X11/extensions/shape.h>
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
+#include <cairo-xlib.h>
+#include "theme.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <stdexcept>
 
 namespace ss {
@@ -44,6 +47,12 @@ Viewfinder::Viewfinder(XSession& x, Rect initial) : x_(x) {
     XStoreName(x_.dpy(), win_, "screenshot");
 
     applyShape();
+
+    surf_ = cairo_xlib_surface_create(x_.dpy(), win_, x_.visual(),
+                                      layout_.win.w, layout_.win.h);
+    if (cairo_surface_status(surf_) != CAIRO_STATUS_SUCCESS)
+        throw std::runtime_error("failed to create the cairo drawing surface");
+
     XMapRaised(x_.dpy(), win_);
 
     // Override-redirect windows get no focus from the WM, so take the
@@ -54,6 +63,10 @@ Viewfinder::Viewfinder(XSession& x, Rect initial) : x_(x) {
 
 Viewfinder::~Viewfinder() {
     teardown();
+    if (surf_) {
+        cairo_surface_destroy(surf_);
+        surf_ = nullptr;
+    }
     if (win_) {
         XDestroyWindow(x_.dpy(), win_);
         win_ = 0;
@@ -98,6 +111,156 @@ void Viewfinder::applyShape() {
                             const_cast<XRectangle*>(parts), 5, ShapeSet, Unsorted);
 }
 
+
+namespace {
+
+void fillRect(cairo_t* cr, const Rect& r) {
+    cairo_rectangle(cr, r.x, r.y, r.w, r.h);
+    cairo_fill(cr);
+}
+
+} // namespace
+
+void Viewfinder::drawFrame(cairo_t* cr) {
+    const Rect& f = layout_.frameLocal;
+
+    theme::set(cr, theme::base);
+    if (!x_.hasShape()) {
+        fillRect(cr, f);            // no hole to preserve, so fill it flat
+    } else {
+        fillRect(cr, { f.x, f.y, f.w, BORDER });
+        fillRect(cr, { f.x, f.bottom() - BORDER, f.w, BORDER });
+        fillRect(cr, { f.x, f.y + BORDER, BORDER, f.h - 2 * BORDER });
+        fillRect(cr, { f.right() - BORDER, f.y + BORDER, BORDER, f.h - 2 * BORDER });
+    }
+
+    // A hairline right on the hole edge so the capture boundary is exact.
+    const Rect& h = layout_.holeLocal;
+    theme::set(cr, theme::blue);
+    cairo_set_line_width(cr, 1.0);
+    cairo_rectangle(cr, h.x - 0.5, h.y - 0.5, h.w + 1.0, h.h + 1.0);
+    cairo_stroke(cr);
+}
+
+// Blue marks showing where the eight resize grips are: an L at each corner
+// and a short bar at each edge midpoint. The hovered one lights up.
+void Viewfinder::drawHandles(cairo_t* cr) {
+    const Rect& f = layout_.frameLocal;
+    constexpr int kLeg = 22;   // corner arm length
+    constexpr int kBar = 30;   // edge bar length
+
+    auto mark = [&](Zone z, const Rect& a, const Rect& b) {
+        theme::set(cr, hover_ == z ? theme::sky : theme::blue);
+        fillRect(cr, a);
+        if (b.w > 0 && b.h > 0) fillRect(cr, b);
+    };
+
+    const int l = f.x, t = f.y, r = f.right(), b = f.bottom();
+    const int legX = std::min(kLeg, f.w / 3);
+    const int legY = std::min(kLeg, f.h / 3);
+
+    mark(Zone::NW, { l, t, legX, BORDER }, { l, t, BORDER, legY });
+    mark(Zone::NE, { r - legX, t, legX, BORDER }, { r - BORDER, t, BORDER, legY });
+    mark(Zone::SW, { l, b - BORDER, legX, BORDER }, { l, b - legY, BORDER, legY });
+    mark(Zone::SE, { r - legX, b - BORDER, legX, BORDER },
+                   { r - BORDER, b - legY, BORDER, legY });
+
+    const int barW = std::min(kBar, std::max(0, f.w - 2 * legX - 8));
+    const int barH = std::min(kBar, std::max(0, f.h - 2 * legY - 8));
+    if (barW > 0) {
+        mark(Zone::N, { l + (f.w - barW) / 2, t, barW, BORDER }, {});
+        mark(Zone::S, { l + (f.w - barW) / 2, b - BORDER, barW, BORDER }, {});
+    }
+    if (barH > 0) {
+        mark(Zone::W, { l, t + (f.h - barH) / 2, BORDER, barH }, {});
+        mark(Zone::E, { r - BORDER, t + (f.h - barH) / 2, BORDER, barH }, {});
+    }
+}
+
+void Viewfinder::drawButton(cairo_t* cr, const Rect& r, const char* label,
+                            bool primary, bool hovered, bool pressed) {
+    theme::Color bg = primary ? (hovered ? theme::teal : theme::green)
+                              : (hovered ? theme::surface2 : theme::surface1);
+    if (pressed) { bg.r *= 0.82; bg.g *= 0.82; bg.b *= 0.82; }
+
+    theme::set(cr, bg);
+    theme::roundedRect(cr, r.x, r.y, r.w, r.h, 4.0);
+    cairo_fill(cr);
+
+    theme::set(cr, primary ? theme::crust : theme::text);
+    cairo_select_font_face(cr, "sans", CAIRO_FONT_SLANT_NORMAL,
+                           CAIRO_FONT_WEIGHT_BOLD);
+    cairo_set_font_size(cr, 12.0);
+
+    cairo_text_extents_t te;
+    cairo_text_extents(cr, label, &te);
+    cairo_move_to(cr, r.x + (r.w - te.width) / 2.0 - te.x_bearing,
+                      r.y + (r.h - te.height) / 2.0 - te.y_bearing);
+    cairo_show_text(cr, label);
+}
+
+void Viewfinder::drawToolbar(cairo_t* cr) {
+    const Rect& t = layout_.toolbarLocal;
+
+    theme::set(cr, theme::mantle);
+    fillRect(cr, t);
+
+    // Separator on whichever side faces the frame.
+    theme::set(cr, theme::surface1);
+    fillRect(cr, { t.x, layout_.toolbarOnTop ? t.bottom() - 1 : t.y, t.w, 1 });
+
+    // Grip dots hinting that the toolbar is what you drag to move the frame.
+    theme::set(cr, hover_ == Zone::Move ? theme::subtext : theme::surface2);
+    for (int col = 0; col < 2; ++col)
+        for (int row = 0; row < 3; ++row)
+            fillRect(cr, { PAD + col * 4, t.y + TOOLBAR_H / 2 - 5 + row * 4, 2, 2 });
+
+    // Live readout: the exact pixel size and origin that will be captured.
+    char size[64];
+    std::snprintf(size, sizeof size, "%d \xc3\x97 %d", sel_.w, sel_.h);
+    char at[64];
+    std::snprintf(at, sizeof at, "at %d, %d", sel_.x, sel_.y);
+
+    const double ty = t.y + TOOLBAR_H / 2.0 + 4.0;
+    cairo_select_font_face(cr, "sans", CAIRO_FONT_SLANT_NORMAL,
+                           CAIRO_FONT_WEIGHT_BOLD);
+    cairo_set_font_size(cr, 12.5);
+    theme::set(cr, theme::text);
+    cairo_move_to(cr, PAD + 16, ty);
+    cairo_show_text(cr, size);
+
+    cairo_text_extents_t te;
+    cairo_text_extents(cr, size, &te);
+
+    cairo_select_font_face(cr, "sans", CAIRO_FONT_SLANT_NORMAL,
+                           CAIRO_FONT_WEIGHT_NORMAL);
+    cairo_set_font_size(cr, 11.5);
+    theme::set(cr, theme::subtext);
+    const double atX = PAD + 16 + te.x_advance + 10;
+    if (atX + 70 < layout_.cancelBtn.x) {   // hide it rather than collide
+        cairo_move_to(cr, atX, ty);
+        cairo_show_text(cr, at);
+    }
+
+    drawButton(cr, layout_.cancelBtn, "Cancel", false,
+               hover_ == Zone::CancelBtn, pressed_ == Zone::CancelBtn);
+    drawButton(cr, layout_.saveBtn, "Save", true,
+               hover_ == Zone::SaveBtn, pressed_ == Zone::SaveBtn);
+}
+
+void Viewfinder::draw() {
+    if (!surf_) return;
+    cairo_t* cr = cairo_create(surf_);
+    cairo_set_antialias(cr, CAIRO_ANTIALIAS_NONE);
+    drawFrame(cr);
+    drawHandles(cr);
+    cairo_set_antialias(cr, CAIRO_ANTIALIAS_DEFAULT);
+    drawToolbar(cr);
+    cairo_destroy(cr);
+    cairo_surface_flush(surf_);
+    XFlush(x_.dpy());
+}
+
 void Viewfinder::setGeometry(const Rect& sel) {
     sel_    = sel;
     layout_ = layoutFor(sel_, x_.screenW(), x_.screenH());
@@ -106,6 +269,8 @@ void Viewfinder::setGeometry(const Rect& sel) {
                       static_cast<unsigned>(layout_.win.w),
                       static_cast<unsigned>(layout_.win.h));
     applyShape();  // the shape is in window coords, so it must follow every resize
+    cairo_xlib_surface_set_size(surf_, layout_.win.w, layout_.win.h);
+    draw();
 }
 
 std::optional<Rect> Viewfinder::run() {
@@ -126,6 +291,9 @@ std::optional<Rect> Viewfinder::run() {
             }
             break;
         }
+        case Expose:
+            if (e.xexpose.count == 0) draw();
+            break;
         case ButtonPress:
             if (e.xbutton.button == Button1) {
                 result = sel_;

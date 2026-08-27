@@ -30,8 +30,10 @@ struct Rect {
     }
 };
 
+// 'Outside' rather than 'None' on purpose: X11's X.h defines None as a macro,
+// so Zone::None would expand to Zone::0L wherever Xlib is included first.
 enum class Zone {
-    None, Move, N, S, E, W, NE, NW, SE, SW, SaveBtn, CancelBtn
+    Outside, Move, N, S, E, W, NE, NW, SE, SW, SaveBtn, CancelBtn
 };
 
 constexpr bool isResize(Zone z) {
@@ -97,8 +99,8 @@ inline Zone hitTest(const Layout& L, int lx, int ly) {
     if (L.cancelBtn.contains(lx, ly)) return Zone::CancelBtn;
     if (L.toolbarLocal.contains(lx, ly)) return Zone::Move;
 
-    if (!L.frameLocal.contains(lx, ly)) return Zone::None;
-    if (L.holeLocal.contains(lx, ly))   return Zone::None;  // shaped away anyway
+    if (!L.frameLocal.contains(lx, ly)) return Zone::Outside;
+    if (L.holeLocal.contains(lx, ly))   return Zone::Outside;  // shaped away anyway
 
     const int fx = lx - L.frameLocal.x;
     const int fy = ly - L.frameLocal.y;

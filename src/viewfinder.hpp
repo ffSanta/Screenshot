@@ -4,6 +4,7 @@
 #include "xsession.hpp"
 
 #include <X11/Xlib.h>
+#include <cairo.h>
 #include <optional>
 
 namespace ss {
@@ -31,12 +32,21 @@ public:
 private:
     void setGeometry(const Rect& sel);
     void applyShape();
+    void draw();
+    void drawFrame(cairo_t* cr);
+    void drawHandles(cairo_t* cr);
+    void drawToolbar(cairo_t* cr);
+    void drawButton(cairo_t* cr, const Rect& r, const char* label, bool primary,
+                    bool hovered, bool pressed);
     void teardown();
 
     XSession& x_;
     Window    win_ = 0;
+    cairo_surface_t* surf_ = nullptr;
     Rect      sel_{};
     Layout    layout_{};
+    Zone      hover_   = Zone::Outside;   // zone under the pointer, for highlights
+    Zone      pressed_ = Zone::Outside;   // button being held down
 };
 
 // Sensible starting frame: 800x500, shrunk to fit and centred on screen.
