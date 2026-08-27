@@ -362,6 +362,46 @@ void Viewfinder::onButtonRelease(const XButtonEvent& e) {
     }
 }
 
+
+void Viewfinder::onKeyPress(const XKeyEvent& e) {
+    const bool ctrl  = (e.state & ControlMask) != 0;
+    const bool shift = (e.state & ShiftMask) != 0;
+
+    // Unshifted lookup throughout: the keys we bind (arrows, Escape, Return,
+    // S) have no shifted variant, and Shift is read from the modifier mask
+    // instead, where it selects resize rather than move.
+    const KeySym ks = XLookupKeysym(const_cast<XKeyEvent*>(&e), 0);
+
+    if (ks == XK_Escape) { running_ = false; return; }
+    if (ks == XK_Return || ks == XK_KP_Enter) {
+        result_ = sel_;
+        running_ = false;
+        return;
+    }
+    if (ctrl && ks == XK_s) {
+        result_ = sel_;
+        running_ = false;
+        return;
+    }
+
+    int dx = 0, dy = 0;
+    switch (ks) {
+        case XK_Left:  dx = -1; break;
+        case XK_Right: dx =  1; break;
+        case XK_Up:    dy = -1; break;
+        case XK_Down:  dy =  1; break;
+        default: return;
+    }
+
+    const int step = ctrl ? 10 : 1;
+    const Rect next = applyKey(shift, dx * step, dy * step, sel_,
+                               x_.screenW(), x_.screenH());
+    if (next.x != sel_.x || next.y != sel_.y ||
+        next.w != sel_.w || next.h != sel_.h) {
+        setGeometry(next);
+    }
+}
+
 std::optional<Rect> Viewfinder::run() {
     XDefineCursor(x_.dpy(), win_, cursorFor(Zone::Outside));
 
@@ -396,16 +436,9 @@ std::optional<Rect> Viewfinder::run() {
             if (dragZone_ == Zone::Outside) setHover(Zone::Outside);
             break;
 
-        case KeyPress: {
-            const KeySym ks = XLookupKeysym(&e.xkey, 0);
-            if (ks == XK_Escape) {
-                running_ = false;
-            } else if (ks == XK_Return || ks == XK_KP_Enter) {
-                result_ = sel_;
-                running_ = false;
-            }
+        case KeyPress:
+            onKeyPress(e.xkey);
             break;
-        }
 
         default:
             break;

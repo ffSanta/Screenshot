@@ -44,6 +44,7 @@ private:
     void onButtonPress(const XButtonEvent& e);
     void onMotion(const XMotionEvent& e);
     void onButtonRelease(const XButtonEvent& e);
+    void onKeyPress(const XKeyEvent& e);
     void setHover(Zone z);
     Cursor cursorFor(Zone z);
 
