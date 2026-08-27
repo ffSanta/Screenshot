@@ -23,6 +23,7 @@ add_executable(screenshot
   src/options.cpp
   src/xsession.cpp
   src/viewfinder.cpp
+  src/capture.cpp
 )
 
 target_compile_options(screenshot PRIVATE -Wall -Wextra)

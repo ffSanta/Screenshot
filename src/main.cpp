@@ -1,3 +1,4 @@
+#include "capture.hpp"
 #include "options.hpp"
 #include "viewfinder.hpp"
 #include "xsession.hpp"
@@ -26,7 +27,12 @@ int main(int argc, char** argv) {
         auto sel = vf.run();
         if (!sel) return 1;
 
-        std::printf("selected %dx%d at %d,%d\n", sel->w, sel->h, sel->x, sel->y);
+        cairo_surface_t* img = ss::captureRegion(x, *sel);
+        std::printf("captured %dx%d at %d,%d\n",
+                    cairo_image_surface_get_width(img),
+                    cairo_image_surface_get_height(img),
+                    sel->x, sel->y);
+        cairo_surface_destroy(img);
         return 0;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "screenshot: %s\n", e.what());
