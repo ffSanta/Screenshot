@@ -40,6 +40,9 @@ int main(int argc, char** argv) {
         cairo_surface_destroy(img);
 
         std::printf("%s\n", path.c_str());
+        std::fflush(stdout);            // the path is useful even if xdg-open stalls
+
+        if (opt.open) ss::output::openWith(path);
         return 0;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "screenshot: %s\n", e.what());

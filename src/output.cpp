@@ -1,5 +1,8 @@
 #include "output.hpp"
 
+#include <sys/wait.h>
+#include <unistd.h>
+
 #include <cstdlib>
 #include <ctime>
 #include <fstream>
@@ -77,6 +80,25 @@ fs::path save(cairo_surface_t* surf, const fs::path& dir) {
                                  cairo_status_to_string(st));
 
     return path;
+}
+
+void openWith(const fs::path& path) {
+    const pid_t first = fork();
+    if (first < 0) return;              // nothing worth failing the save over
+
+    if (first == 0) {
+        // Intermediate child forks again and exits, so the grandchild is
+        // orphaned onto init rather than lingering as our zombie.
+        if (fork() == 0) {
+            setsid();
+            execlp("xdg-open", "xdg-open", path.c_str(), nullptr);
+            _exit(127);                 // exec failed; nothing else to do here
+        }
+        _exit(0);
+    }
+
+    int status = 0;
+    waitpid(first, &status, 0);         // reaps immediately, grandchild lives on
 }
 
 } // namespace ss::output
