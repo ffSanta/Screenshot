@@ -1,9 +1,11 @@
 #include "capture.hpp"
 #include "options.hpp"
+#include "output.hpp"
 #include "viewfinder.hpp"
 #include "xsession.hpp"
 
 #include <cstdio>
+#include <filesystem>
 #include <exception>
 
 int main(int argc, char** argv) {
@@ -28,11 +30,16 @@ int main(int argc, char** argv) {
         if (!sel) return 1;
 
         cairo_surface_t* img = ss::captureRegion(x, *sel);
-        std::printf("captured %dx%d at %d,%d\n",
-                    cairo_image_surface_get_width(img),
-                    cairo_image_surface_get_height(img),
-                    sel->x, sel->y);
+        std::filesystem::path path;
+        try {
+            path = ss::output::save(img, opt.dir ? *opt.dir : ss::output::defaultDir());
+        } catch (...) {
+            cairo_surface_destroy(img);
+            throw;
+        }
         cairo_surface_destroy(img);
+
+        std::printf("%s\n", path.c_str());
         return 0;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "screenshot: %s\n", e.what());
