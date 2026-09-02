@@ -31,7 +31,7 @@ void usage(std::FILE* to) {
         "  Enter, Ctrl+S        Save\n"
         "  Arrows               Move 1px       Ctrl+Arrows        Move 10px\n"
         "  Shift+Arrows         Resize 1px     Ctrl+Shift+Arrows  Resize 10px\n"
-        "  Holding an arrow accelerates, up to 64px per step.\n"
+        "  Holding an arrow accelerates, up to 128px per step.\n"
         "\n"
         "Prints the saved path to stdout. Exit 0 on save, 1 on cancel.\n");
 }
