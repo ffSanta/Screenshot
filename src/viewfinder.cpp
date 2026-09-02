@@ -4,6 +4,7 @@
 #include <X11/extensions/shape.h>
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
+#include <X11/XKBlib.h>
 #include <X11/Xcursor/Xcursor.h>
 #include <cairo-xlib.h>
 #include "theme.hpp"
@@ -60,6 +61,18 @@ Viewfinder::Viewfinder(XSession& x, Rect initial) : x_(x) {
     // Override-redirect windows get no focus from the WM, so take the
     // keyboard directly or the key bindings would never fire.
     XGrabKeyboard(x_.dpy(), win_, True, GrabModeAsync, GrabModeAsync, CurrentTime);
+
+    // Arrow acceleration needs to know when two key events belong to one held
+    // key. The pause before X starts repeating is much longer than the gap
+    // between repeats - often 500-700ms - so ask the server rather than
+    // assuming, or the very first repeat looks like a fresh tap and the ramp
+    // never engages at all.
+    unsigned int repeatDelay = 0, repeatInterval = 0;
+    if (XkbGetAutoRepeatRate(x_.dpy(), XkbUseCoreKbd, &repeatDelay,
+                             &repeatInterval) && repeatDelay > 0) {
+        keyGapMs_ = repeatDelay + std::max(repeatInterval, 20u) * 2;
+    }
+
     XSync(x_.dpy(), False);
 }
 
@@ -399,7 +412,7 @@ void Viewfinder::onKeyPress(const XKeyEvent& e) {
     // than one auto-repeat interval, drops back to single pixels.
     const bool continues = dx == keyDx_ && dy == keyDy_ && shift == keyResize_
                         && e.time >= keyTime_
-                        && e.time - keyTime_ <= KEY_REPEAT_GAP_MS;
+                        && e.time - keyTime_ <= keyGapMs_;
     keyRepeats_ = continues ? keyRepeats_ + 1 : 0;
     keyDx_      = dx;
     keyDy_      = dy;

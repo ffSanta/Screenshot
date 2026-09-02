@@ -168,22 +168,24 @@ inline Rect applyDrag(Zone z, const Rect& anchor, int dx, int dy,
 // controllable even on top of the coarse Ctrl step.
 inline constexpr int MAX_KEY_STEP = 128;
 
-// How long a gap between two arrow events still counts as one held key. X
-// auto-repeat runs at roughly 30/s, so this is comfortably above one interval
-// but well below a deliberate second tap.
-inline constexpr unsigned long KEY_REPEAT_GAP_MS = 200;
+// Fallback for how long a gap between two arrow events still counts as one
+// held key, used only if X cannot tell us its auto-repeat timing. The real
+// value is derived at runtime from the server's own auto-repeat delay, which
+// is commonly 500-700ms - far longer than the interval between subsequent
+// repeats, and the gap the tap-to-first-repeat pause has to clear.
+inline constexpr unsigned long KEY_REPEAT_GAP_FALLBACK_MS = 800;
 
-// Step for the n-th consecutive event of a held arrow. Only the very first
-// event stays at the base step - that is the single tap, which has to remain
-// exact to the pixel - and from the second one on it ramps hard, so a held
-// arrow crosses the screen in well under a second.
+// Step for the n-th consecutive event of a held arrow.
+//
+// Event 0 is a tap and stays at the base step, exact to the pixel. Event 1 is
+// not the next frame of a smooth ramp: X only starts repeating after its
+// auto-repeat delay, typically several hundred milliseconds, so by the time it
+// arrives the key has been held long enough to mean "keep going" - hence the
+// jump straight to 16x rather than a climb from 2x. From there it doubles per
+// event and saturates almost immediately.
 inline int accelStep(int base, int repeats) {
-    int mult = 1;
-    if      (repeats >= 12) mult = 32;
-    else if (repeats >= 8)  mult = 16;
-    else if (repeats >= 5)  mult = 8;
-    else if (repeats >= 3)  mult = 4;
-    else if (repeats >= 1)  mult = 2;
+    if (repeats <= 0) return std::min(base, MAX_KEY_STEP);
+    const int mult = repeats >= 4 ? 128 : (16 << (repeats - 1));
     return std::min(base * mult, MAX_KEY_STEP);
 }
 

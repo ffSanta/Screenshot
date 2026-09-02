@@ -168,10 +168,17 @@ Pressing a button and releasing somewhere else cancels the click, as usual.
 | `Shift` + Arrows | Resize 1 px |
 | `Ctrl+Shift` + Arrows | Resize 10 px |
 
-Holding an arrow accelerates. Only a single tap uses the base step, so pixel
-precision is intact; from the second repeat on the step ramps 2x -> 4x -> 8x
--> 16x -> 32x, reaching full speed after roughly 0.4 s and capped at 128 px
-per step.
+Holding an arrow accelerates. A tap is exactly the base step, so pixel
+precision is intact. The moment X starts auto-repeating, the key has already
+been held for the server's repeat delay, so the step jumps straight to 16x and
+then doubles per event to a 128 px cap - full speed within about 120 ms of the
+first repeat.
+
+The run of repeats is recognised from the server's own auto-repeat delay
+(`XkbGetAutoRepeatRate`), not a fixed guess, so acceleration works whatever
+`xset r rate` is set to. If the initial pause before repeating still feels
+long, that pause is the X setting itself and applies to every application:
+`xset r rate 250 30` shortens it to 250 ms.
 
 ### Exit codes
 

@@ -72,6 +72,7 @@ private:
     bool      keyResize_ = false;
     Time      keyTime_   = 0;
     int       keyRepeats_ = 0;
+    unsigned long keyGapMs_ = KEY_REPEAT_GAP_FALLBACK_MS;  // from X, see ctor
 
     std::unordered_map<int, Cursor> cursors_;
     Zone      cursorZone_ = Zone::CancelBtn;  // deliberately != initial hover
