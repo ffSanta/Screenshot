@@ -168,6 +168,10 @@ Pressing a button and releasing somewhere else cancels the click, as usual.
 | `Shift` + Arrows | Resize 1 px |
 | `Ctrl+Shift` + Arrows | Resize 10 px |
 
+Holding an arrow accelerates. The first few repeats stay at the base step so a
+tap is still exact to the pixel, then it doubles at roughly 0.15 s, 0.3 s,
+0.5 s and 0.8 s, capped at 64 px per step.
+
 ### Exit codes
 
 | Code | Meaning |

@@ -64,6 +64,15 @@ private:
     int       anchorRootX_ = 0;
     int       anchorRootY_ = 0;
 
+    // Held-arrow acceleration. X gives us no key-release event here, so a
+    // run of repeats is recognised by direction, mode and arrival time rather
+    // than by tracking the key being down.
+    int       keyDx_     = 0;
+    int       keyDy_     = 0;
+    bool      keyResize_ = false;
+    Time      keyTime_   = 0;
+    int       keyRepeats_ = 0;
+
     std::unordered_map<int, Cursor> cursors_;
     Zone      cursorZone_ = Zone::CancelBtn;  // deliberately != initial hover
 

@@ -390,10 +390,23 @@ void Viewfinder::onKeyPress(const XKeyEvent& e) {
         case XK_Right: dx =  1; break;
         case XK_Up:    dy = -1; break;
         case XK_Down:  dy =  1; break;
-        default: return;
+        default:
+            keyRepeats_ = 0;   // any other key breaks the run
+            return;
     }
 
-    const int step = ctrl ? 10 : 1;
+    // A held arrow ramps up; changing direction or mode, or pausing longer
+    // than one auto-repeat interval, drops back to single pixels.
+    const bool continues = dx == keyDx_ && dy == keyDy_ && shift == keyResize_
+                        && e.time >= keyTime_
+                        && e.time - keyTime_ <= KEY_REPEAT_GAP_MS;
+    keyRepeats_ = continues ? keyRepeats_ + 1 : 0;
+    keyDx_      = dx;
+    keyDy_      = dy;
+    keyResize_  = shift;
+    keyTime_    = e.time;
+
+    const int step = accelStep(ctrl ? 10 : 1, keyRepeats_);
     const Rect next = applyKey(shift, dx * step, dy * step, sel_,
                                x_.screenW(), x_.screenH());
     if (next.x != sel_.x || next.y != sel_.y ||

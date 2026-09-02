@@ -164,6 +164,27 @@ inline Rect applyDrag(Zone z, const Rect& anchor, int dx, int dy,
     return { l, t, r - l, b - t };
 }
 
+// Largest single keyboard step, so the accelerated repeat below stays
+// controllable even on top of the coarse Ctrl step.
+inline constexpr int MAX_KEY_STEP = 64;
+
+// How long a gap between two arrow events still counts as one held key. X
+// auto-repeat runs at roughly 30/s, so this is comfortably above one interval
+// but well below a deliberate second tap.
+inline constexpr unsigned long KEY_REPEAT_GAP_MS = 200;
+
+// Step for the n-th consecutive event of a held arrow. The first few stay at
+// the base step so a tap is still exact to the pixel, then it ramps so that
+// crossing the screen no longer takes a hundred presses.
+inline int accelStep(int base, int repeats) {
+    int mult = 1;
+    if      (repeats >= 24) mult = 16;
+    else if (repeats >= 14) mult = 8;
+    else if (repeats >= 8)  mult = 4;
+    else if (repeats >= 4)  mult = 2;
+    return std::min(base * mult, MAX_KEY_STEP);
+}
+
 // Nudge or grow the selection with the keyboard. Resizing pulls on the
 // bottom-right corner so the origin stays put.
 inline Rect applyKey(bool resize, int dx, int dy, const Rect& cur,
