@@ -5,6 +5,9 @@
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
 #include <X11/XKBlib.h>
+#include <sys/select.h>
+#include <cerrno>
+#include <ctime>
 #include <X11/Xcursor/Xcursor.h>
 #include <cairo-xlib.h>
 #include "theme.hpp"
@@ -32,7 +35,8 @@ Viewfinder::Viewfinder(XSession& x, Rect initial) : x_(x) {
     a.override_redirect = True;    // the line that keeps i3 from tiling us
     a.background_pixmap = None;    // we paint every pixel ourselves, no flash
     a.event_mask = ExposureMask | ButtonPressMask | ButtonReleaseMask
-                 | PointerMotionMask | KeyPressMask | StructureNotifyMask
+                 | PointerMotionMask | KeyPressMask | KeyReleaseMask
+                 | StructureNotifyMask
                  | EnterWindowMask | LeaveWindowMask;
 
     win_ = XCreateWindow(x_.dpy(), x_.root(),
@@ -62,16 +66,12 @@ Viewfinder::Viewfinder(XSession& x, Rect initial) : x_(x) {
     // keyboard directly or the key bindings would never fire.
     XGrabKeyboard(x_.dpy(), win_, True, GrabModeAsync, GrabModeAsync, CurrentTime);
 
-    // Arrow acceleration needs to know when two key events belong to one held
-    // key. The pause before X starts repeating is much longer than the gap
-    // between repeats - often 500-700ms - so ask the server rather than
-    // assuming, or the very first repeat looks like a fresh tap and the ramp
-    // never engages at all.
-    unsigned int repeatDelay = 0, repeatInterval = 0;
-    if (XkbGetAutoRepeatRate(x_.dpy(), XkbUseCoreKbd, &repeatDelay,
-                             &repeatInterval) && repeatDelay > 0) {
-        keyGapMs_ = repeatDelay + std::max(repeatInterval, 20u) * 2;
-    }
+    // Without this, X sends a KeyRelease/KeyPress pair for every auto-repeat,
+    // which is indistinguishable from the user tapping the key. We track which
+    // arrows are physically down, so ask XKB for real releases only.
+    Bool supported = False;
+    XkbSetDetectableAutoRepeat(x_.dpy(), True, &supported);
+    detectableRepeat_ = supported == True;
 
     XSync(x_.dpy(), False);
 }
@@ -397,30 +397,78 @@ void Viewfinder::onKeyPress(const XKeyEvent& e) {
         return;
     }
 
-    int dx = 0, dy = 0;
+    unsigned arrow = 0;
     switch (ks) {
-        case XK_Left:  dx = -1; break;
-        case XK_Right: dx =  1; break;
-        case XK_Up:    dy = -1; break;
-        case XK_Down:  dy =  1; break;
-        default:
-            keyRepeats_ = 0;   // any other key breaks the run
-            return;
+        case XK_Left:  arrow = ArrowLeft;  break;
+        case XK_Right: arrow = ArrowRight; break;
+        case XK_Up:    arrow = ArrowUp;    break;
+        case XK_Down:  arrow = ArrowDown;  break;
+        default: return;
     }
 
-    // A held arrow ramps up; changing direction or mode, or pausing longer
-    // than one auto-repeat interval, drops back to single pixels.
-    const bool continues = dx == keyDx_ && dy == keyDy_ && shift == keyResize_
-                        && e.time >= keyTime_
-                        && e.time - keyTime_ <= keyGapMs_;
-    keyRepeats_ = continues ? keyRepeats_ + 1 : 0;
-    keyDx_      = dx;
-    keyDy_      = dy;
-    keyResize_  = shift;
-    keyTime_    = e.time;
+    // Auto-repeat still arrives as KeyPress even with detectable repeat on.
+    // Ignore it: the hold is already running off our own clock.
+    if (held_ & arrow) return;
 
-    const int step = accelStep(ctrl ? 10 : 1, keyRepeats_);
-    const Rect next = applyKey(shift, dx * step, dy * step, sel_,
+    // Modifiers are read once per hold, from the arrow that starts it, so
+    // that letting go of Shift mid-hold cannot flip a resize into a move.
+    if (held_ == 0) {
+        heldResize_ = shift;
+        heldCoarse_ = ctrl;
+        heldTicks_  = 0;
+    }
+    held_ |= arrow;
+
+    // The press itself moves one base step, so a tap stays exact to the pixel;
+    // the timer in run() takes over once the key is held past the delay.
+    applyStep(accelStep(heldCoarse_ ? 10 : 1, 0));
+}
+
+void Viewfinder::onKeyRelease(const XKeyEvent& e) {
+    if (isAutoRepeatRelease(e)) return;
+
+    const KeySym ks = XLookupKeysym(const_cast<XKeyEvent*>(&e), 0);
+    switch (ks) {
+        case XK_Left:  held_ &= ~static_cast<unsigned>(ArrowLeft);  break;
+        case XK_Right: held_ &= ~static_cast<unsigned>(ArrowRight); break;
+        case XK_Up:    held_ &= ~static_cast<unsigned>(ArrowUp);    break;
+        case XK_Down:  held_ &= ~static_cast<unsigned>(ArrowDown);  break;
+        default: return;
+    }
+    // Releasing one of a pair leaves the other running at the speed already
+    // built up; only letting go of everything resets the ramp.
+    if (held_ == 0) heldTicks_ = 0;
+}
+
+// On a server without detectable auto-repeat, a repeat looks like a release
+// immediately followed by a press of the same key at the same timestamp.
+// Peek for that pair and swallow both.
+bool Viewfinder::isAutoRepeatRelease(const XKeyEvent& e) {
+    if (detectableRepeat_) return false;
+    if (!XPending(x_.dpy())) return false;
+    XEvent next;
+    XPeekEvent(x_.dpy(), &next);
+    if (next.type == KeyPress && next.xkey.keycode == e.keycode
+        && next.xkey.time == e.time) {
+        XNextEvent(x_.dpy(), &next);   // drop the paired press as well
+        return true;
+    }
+    return false;
+}
+
+// One tick of the held arrows. Opposing keys cancel, which is what makes a
+// diagonal fall out naturally: Right+Up is dx=+1, dy=-1 applied together.
+void Viewfinder::stepHeld() {
+    ++heldTicks_;
+    applyStep(accelStep(heldCoarse_ ? 10 : 1, heldTicks_));
+}
+
+void Viewfinder::applyStep(int step) {
+    const int dx = ((held_ & ArrowRight) ? 1 : 0) - ((held_ & ArrowLeft) ? 1 : 0);
+    const int dy = ((held_ & ArrowDown)  ? 1 : 0) - ((held_ & ArrowUp)   ? 1 : 0);
+    if (dx == 0 && dy == 0) return;
+
+    const Rect next = applyKey(heldResize_, dx * step, dy * step, sel_,
                                x_.screenW(), x_.screenH());
     if (next.x != sel_.x || next.y != sel_.y ||
         next.w != sel_.w || next.h != sel_.h) {
@@ -428,46 +476,100 @@ void Viewfinder::onKeyPress(const XKeyEvent& e) {
     }
 }
 
+// Milliseconds on a monotonic clock, for the hold timer. X event timestamps
+// are no use here: ticks we generate ourselves have no event to read them off.
+static unsigned long nowMs() {
+    struct timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<unsigned long>(ts.tv_sec) * 1000UL
+         + static_cast<unsigned long>(ts.tv_nsec) / 1000000UL;
+}
+
+void Viewfinder::dispatch(XEvent& e) {
+    switch (e.type) {
+    case Expose:
+        if (e.xexpose.count == 0) draw();
+        break;
+
+    case MotionNotify: {
+        // Collapse the queued motion events and act on the newest only,
+        // otherwise a fast drag falls behind the pointer redrawing stale
+        // positions.
+        XEvent m = e;
+        while (XCheckTypedWindowEvent(x_.dpy(), win_, MotionNotify, &m)) {}
+        onMotion(m.xmotion);
+        break;
+    }
+
+    case ButtonPress:
+        onButtonPress(e.xbutton);
+        break;
+
+    case ButtonRelease:
+        onButtonRelease(e.xbutton);
+        break;
+
+    case LeaveNotify:
+        if (dragZone_ == Zone::Outside) setHover(Zone::Outside);
+        break;
+
+    case KeyPress:
+        onKeyPress(e.xkey);
+        break;
+
+    case KeyRelease:
+        onKeyRelease(e.xkey);
+        break;
+
+    default:
+        break;
+    }
+}
+
 std::optional<Rect> Viewfinder::run() {
     XDefineCursor(x_.dpy(), win_, cursorFor(Zone::Outside));
 
+    const int fd = ConnectionNumber(x_.dpy());
+    unsigned long nextTick = 0;   // when the held arrows next move, 0 = idle
+
     while (running_) {
-        XEvent e;
-        XNextEvent(x_.dpy(), &e);
+        while (running_ && XPending(x_.dpy())) {
+            XEvent e;
+            XNextEvent(x_.dpy(), &e);
+            const unsigned wasHeld = held_;
+            dispatch(e);
+            // A hold that just started waits out the initial delay, so a tap
+            // never turns into a slide.
+            if (held_ && !wasHeld) nextTick = nowMs() + KEY_HOLD_DELAY_MS;
+            else if (!held_)       nextTick = 0;
+        }
+        if (!running_) break;
 
-        switch (e.type) {
-        case Expose:
-            if (e.xexpose.count == 0) draw();
-            break;
+        // Nothing queued: block on the connection, but only until the next
+        // tick is due if an arrow is being held.
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(fd, &rfds);
 
-        case MotionNotify: {
-            // Collapse the queued motion events and act on the newest only,
-            // otherwise a fast drag falls behind the pointer redrawing stale
-            // positions.
-            XEvent m = e;
-            while (XCheckTypedWindowEvent(x_.dpy(), win_, MotionNotify, &m)) {}
-            onMotion(m.xmotion);
-            break;
+        struct timeval tv{};
+        struct timeval* timeout = nullptr;
+        if (nextTick) {
+            const unsigned long now = nowMs();
+            const unsigned long wait = nextTick > now ? nextTick - now : 0;
+            tv.tv_sec  = static_cast<time_t>(wait / 1000);
+            tv.tv_usec = static_cast<suseconds_t>((wait % 1000) * 1000);
+            timeout = &tv;
         }
 
-        case ButtonPress:
-            onButtonPress(e.xbutton);
-            break;
-
-        case ButtonRelease:
-            onButtonRelease(e.xbutton);
-            break;
-
-        case LeaveNotify:
-            if (dragZone_ == Zone::Outside) setHover(Zone::Outside);
-            break;
-
-        case KeyPress:
-            onKeyPress(e.xkey);
-            break;
-
-        default:
-            break;
+        XFlush(x_.dpy());
+        const int ready = select(fd + 1, &rfds, nullptr, nullptr, timeout);
+        if (ready < 0) {
+            if (errno == EINTR) continue;
+            break;                       // the connection is unusable
+        }
+        if (ready == 0 && nextTick) {    // timed out: the arrows are still down
+            stepHeld();
+            nextTick = nowMs() + KEY_TICK_MS;
         }
     }
 

@@ -166,26 +166,26 @@ inline Rect applyDrag(Zone z, const Rect& anchor, int dx, int dy,
 
 // Largest single keyboard step, so the accelerated repeat below stays
 // controllable even on top of the coarse Ctrl step.
-inline constexpr int MAX_KEY_STEP = 128;
+inline constexpr int MAX_KEY_STEP = 64;
 
-// Fallback for how long a gap between two arrow events still counts as one
-// held key, used only if X cannot tell us its auto-repeat timing. The real
-// value is derived at runtime from the server's own auto-repeat delay, which
-// is commonly 500-700ms - far longer than the interval between subsequent
-// repeats, and the gap the tap-to-first-repeat pause has to clear.
-inline constexpr unsigned long KEY_REPEAT_GAP_FALLBACK_MS = 800;
+// The frame repeats under its own timer rather than riding X auto-repeat:
+// X only repeats the most recently pressed key, so with two arrows held for a
+// diagonal, releasing one would stall the other. Driving it ourselves also
+// skips the server's repeat delay, which is commonly 500-700ms.
+inline constexpr unsigned long KEY_HOLD_DELAY_MS = 250;   // press -> first tick
+inline constexpr unsigned long KEY_TICK_MS       = 33;    // ~30 ticks/second
 
-// Step for the n-th consecutive event of a held arrow.
-//
-// Event 0 is a tap and stays at the base step, exact to the pixel. Event 1 is
-// not the next frame of a smooth ramp: X only starts repeating after its
-// auto-repeat delay, typically several hundred milliseconds, so by the time it
-// arrives the key has been held long enough to mean "keep going" - hence the
-// jump straight to 16x rather than a climb from 2x. From there it doubles per
-// event and saturates almost immediately.
-inline int accelStep(int base, int repeats) {
-    if (repeats <= 0) return std::min(base, MAX_KEY_STEP);
-    const int mult = repeats >= 4 ? 128 : (16 << (repeats - 1));
+// Step for the n-th tick of a held arrow. Tick 0 is the initial press and
+// stays at the base step, exact to the pixel. From there the multiplier
+// doubles every three ticks up to 32x, so a plain arrow tops out near
+// 960px/s about half a second in; the Ctrl base runs into MAX_KEY_STEP
+// instead, staying the coarser of the two.
+inline int accelStep(int base, int ticks) {
+    if (ticks <= 0) return std::min(base, MAX_KEY_STEP);
+    int mult = 4;
+    if      (ticks >= 10) mult = 32;
+    else if (ticks >= 7)  mult = 16;
+    else if (ticks >= 4)  mult = 8;
     return std::min(base * mult, MAX_KEY_STEP);
 }
 

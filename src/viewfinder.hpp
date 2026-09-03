@@ -64,15 +64,21 @@ private:
     int       anchorRootX_ = 0;
     int       anchorRootY_ = 0;
 
-    // Held-arrow acceleration. X gives us no key-release event here, so a
-    // run of repeats is recognised by direction, mode and arrival time rather
-    // than by tracking the key being down.
-    int       keyDx_     = 0;
-    int       keyDy_     = 0;
-    bool      keyResize_ = false;
-    Time      keyTime_   = 0;
-    int       keyRepeats_ = 0;
-    unsigned long keyGapMs_ = KEY_REPEAT_GAP_FALLBACK_MS;  // from X, see ctor
+    // Held arrows. A set of directions rather than a single one, so two
+    // arrows held together drive a diagonal; the frame repeats off our own
+    // clock (see run()) instead of X auto-repeat.
+    enum Arrow : unsigned { ArrowLeft = 1, ArrowRight = 2, ArrowUp = 4, ArrowDown = 8 };
+    unsigned  held_       = 0;   // bitmask of Arrow
+    bool      heldResize_ = false;
+    bool      heldCoarse_ = false;
+    int       heldTicks_  = 0;   // ticks elapsed for the current hold
+    bool      detectableRepeat_ = false;  // XKB suppresses synthetic releases
+
+    void onKeyRelease(const XKeyEvent& e);
+    bool isAutoRepeatRelease(const XKeyEvent& e);
+    void stepHeld();
+    void applyStep(int step);
+    void dispatch(XEvent& e);
 
     std::unordered_map<int, Cursor> cursors_;
     Zone      cursorZone_ = Zone::CancelBtn;  // deliberately != initial hover
