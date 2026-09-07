@@ -5,8 +5,9 @@ A region screenshot tool for **Arch Linux + i3**, written in C++20 on raw Xlib.
 Type `screenshot` in a terminal and a floating frame appears with a
 **see-through middle**. Drag its border to resize, drag its toolbar to move it,
 and when the region is framed the way you want, click **Save**. The image lands
-in `~/Pictures/screenshot/` with a timestamped name and the path is printed to
-stdout.
+in `~/Pictures/screenshot/` with a timestamped name, the path is printed to
+stdout, and the image goes on the clipboard so `Ctrl+V` pastes the picture
+itself.
 
 ```
 ┌─────────────────────────────┐
@@ -35,13 +36,18 @@ stdout.
   tiling layout never touches it.
 - **Full keyboard control**, including pixel-precise nudging.
 - **Prints the saved path** to stdout, so it composes with other commands.
-- No dependency on a compositor, and nothing is left running after it exits.
+- **Puts the PNG on the clipboard** — `Ctrl+V` pastes the image, with no
+  `xclip`, `xsel` or `wl-clipboard` needed to copy it.
+- No dependency on a compositor. One small process does stay behind to hold the
+  clipboard, because an X11 selection is served by whoever owns it; it exits as
+  soon as the image is pasted, or as soon as anything else copies.
+  `--no-clipboard` skips it entirely.
 
 ## Tools and libraries
 
 | Library | Why it is here |
 |---|---|
-| **libX11** (Xlib) | Creates the viewfinder window, runs the event loop, and reads the screen with `XGetImage` |
+| **libX11** (Xlib) | Creates the viewfinder window, runs the event loop, reads the screen with `XGetImage`, and owns the `CLIPBOARD` selection |
 | **libXext** → **XShape** | Punches the hole through the middle of the window |
 | **libXcursor** | Loads the resize cursors from the user's cursor theme |
 | **cairo** + **cairo-xlib** | Draws the frame, grips, toolbar and readout onto the X window — *and* writes the final PNG, so libpng is never used directly |
@@ -51,9 +57,13 @@ stdout.
 On Arch these come from `libx11 libxext libxcursor cairo`, all of which are
 already pulled in by a normal Xorg desktop.
 
+Copying needs nothing else — the clipboard is served by this process directly.
+*Pasting* is up to the receiving application, and several shell out to `xclip`;
+the Claude Code CLI is one, so `pacman -S xclip` is worth having.
+
 ## How it works
 
-Three parts of this are not obvious.
+Four parts of this are not obvious.
 
 ### 1. Escaping i3's tiling
 
@@ -112,6 +122,42 @@ only after checking that the visual really is 32 bpp little-endian with
 to `CAIRO_FORMAT_RGB24`. Any other visual falls back to per-channel mask
 arithmetic. Both paths were verified to produce identical output.
 
+### 4. The clipboard is a process, not a buffer
+
+X11 has no clipboard *storage*. Copying makes a window the **owner** of the
+`CLIPBOARD` selection, and every paste is a live round trip: the pasting app
+sends a `SelectionRequest`, the owner answers with the bytes. Under a bare i3
+session there is no clipboard manager to take the data over, so if `screenshot`
+exited straight after `XSetSelectionOwner` the clipboard would be empty before
+you could press `Ctrl+V`.
+
+So the PNG is encoded into memory and a holder is double-forked away — `setsid`,
+reparented to init, and stdin/stdout/stderr on `/dev/null`. That last part is
+not cosmetic: a holder still holding the inherited stdout would keep
+
+```fish
+set shot (screenshot)
+```
+
+blocked until the holder died, because command substitution waits for every
+writer of the pipe to close. The holder opens a **fresh** `XOpenDisplay` — an
+Xlib connection must never be used across a `fork` — takes the selection on a
+1x1 unmapped `InputOnly` window, and answers requests until the image has been
+handed over once. A one-byte pipe back to the parent means the path is not
+printed until ownership is confirmed, so a fast `Ctrl+V` cannot beat it.
+
+Anything over 256 KiB goes out through the ICCCM **INCR** protocol, because a
+single X request cannot carry an arbitrarily large property: the property is
+first set to type `INCR` with a size hint, and the requestor then deletes it
+once per chunk to ask for the next one, ending on a zero-length write. A
+full-screen capture is comfortably past that threshold, so this is the path
+that normally runs, not a rarely-exercised fallback.
+
+Only the image ends the holder. `TARGETS` is a probe, not a paste — Claude Code
+asks for it first to find out what is on offer — and the file path is served as
+text alongside the image, which some apps will prefer; neither consumes the
+screenshot.
+
 ## Build
 
 ```sh
@@ -135,13 +181,15 @@ fish_add_path ~/.local/bin
 ## Usage
 
 ```
-screenshot [--dir <path>] [--geometry WxH+X+Y] [--open] [--help] [--version]
+screenshot [--dir <path>] [--geometry WxH+X+Y] [--no-clipboard] [--open]
+           [--help] [--version]
 ```
 
 | Flag | Effect |
 |---|---|
 | `--dir <path>` | Save here instead of `~/Pictures/screenshot` |
 | `--geometry WxH+X+Y` | Starting frame; the `+X+Y` offset is optional and the frame is centred without it |
+| `--no-clipboard` | Do not copy the image to the clipboard, and leave no holder process |
 | `--open` | Open the saved image with `xdg-open` afterwards |
 | `-h`, `--help` | Usage |
 | `-V`, `--version` | Version |
@@ -229,6 +277,18 @@ shorten the fade in your picom config.
 extension. The tool detects this and falls back to a filled frame; it still
 captures correctly, you just cannot see through it while framing.
 
+**`Ctrl+V` pastes nothing** — the pasting application decides how it reads the
+clipboard, and several shell out to `xclip`, which is not installed by default:
+`pacman -S xclip`. Check the holder is alive with
+`ps --ppid 1 -o pid,comm | grep sshot-clip`, and that `screenshot` printed no
+`clipboard:` warning. Remember the image is served once — after a successful
+paste the holder exits, so a second paste has nothing to fetch.
+
+**A `screenshot` process is still running** — that is the clipboard holder, by
+design; see part 4 above. It exits when the image is pasted, when anything else
+copies, when the X server ends, or after fifteen idle minutes. `--no-clipboard`
+never starts one.
+
 **Colours look wrong in the PNG** — your display is not 24-bit TrueColor, so the
 generic conversion path is in use. It handles arbitrary channel masks, so please
 report the `depth`/`bits_per_pixel`/mask values if something is still off.
@@ -244,5 +304,6 @@ src/
 ├── theme.hpp       colours and rounded-rect helper
 ├── viewfinder.*    the window: shaping, drawing, drag and key handling
 ├── capture.*       XGetImage and the XImage → cairo conversion
-└── output.*        directory resolution, timestamped naming, PNG writing
+├── output.*        directory resolution, timestamped naming, PNG writing
+└── clipboard.*     in-memory PNG encoding and the CLIPBOARD selection owner
 ```

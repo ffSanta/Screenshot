@@ -9,7 +9,8 @@ namespace ss {
 struct Options {
     std::optional<std::filesystem::path> dir;       // --dir, overrides the XDG default
     std::optional<Rect>                  geometry;  // --geometry WxH+X+Y
-    bool                                 open = false;  // --open
+    bool                                 open = false;      // --open
+    bool                                 clipboard = true;  // --no-clipboard turns it off
 };
 
 enum class ParseResult {

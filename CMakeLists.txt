@@ -11,7 +11,7 @@ endif()
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(DEPS REQUIRED IMPORTED_TARGET
-  x11        # window creation, event loop, XGetImage
+  x11        # window creation, event loop, XGetImage, CLIPBOARD ownership
   xext       # XShape - punches the see-through hole
   xcursor    # resize cursors on the drag handles
   cairo      # draws the UI and writes the PNG
@@ -25,6 +25,7 @@ add_executable(screenshot
   src/viewfinder.cpp
   src/capture.cpp
   src/output.cpp
+  src/clipboard.cpp
 )
 
 target_compile_options(screenshot PRIVATE -Wall -Wextra)
